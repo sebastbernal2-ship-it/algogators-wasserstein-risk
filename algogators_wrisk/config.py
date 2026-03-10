@@ -5,6 +5,10 @@ single source of truth for universe selection, windows, and thresholds.
 """
 
 from __future__ import annotations
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ----------------------------
 # Universe & date range
@@ -13,18 +17,18 @@ from __future__ import annotations
 # A small, liquid, cross-asset futures universe (placeholders; edit freely).
 # Convention: use your internal continuous-futures identifiers.
 UNIVERSE: list[str] = [
-    "ES",
-    "NQ",
-    "YM",
-    "RTY",
-    "CL",
-    "NG",
-    "GC",
-    "SI",
-    "ZN",
-    "ZF",
-    "6E",
-    "6J",
+    "ES.v.0",
+    "NQ.v.0",
+    "YM.v.0",
+    "RTY.v.0",
+    "CL.v.0",
+    "NG.v.0",
+    "GC.v.0",
+    "SI.v.0",
+    "ZN.v.0",
+    "ZF.v.0",
+    "6E.v.0",
+    "6J.v.0",
 ]
 
 # Default backtest / research range (business days).

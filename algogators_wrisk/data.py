@@ -18,60 +18,81 @@ def load_continuous_futures_prices(
     *,
     seed: int = 42,
 ) -> pd.DataFrame:
-    """Load daily continuous futures prices for a universe (placeholder).
+    """Load daily continuous futures prices for a universe using algogators-data.
 
     Parameters
     ----------
     universe:
-        List of futures identifiers (e.g., ["ES", "CL", ...]).
+        List of futures identifiers (e.g., ["ES.v.0", "CL.v.0", ...]).
     start_date, end_date:
         Date range (inclusive) parsed by pandas.
     seed:
-        RNG seed so the notebook is reproducible.
+        RNG seed (kept for backward compatibility).
 
     Returns
     -------
     pd.DataFrame
         Wide DataFrame of settle prices, indexed by business date with one
         column per symbol.
-
-    Notes
-    -----
-    TODO: Replace this function with a call to your internal
-    `algogators-data` library / DB.
     """
+    try:
+        from algogators_data import get_futures_data
+    except ImportError:
+        raise ImportError(
+            "algogators-data is missing. Run: pip install algogators-data"
+        )
 
-    dates = pd.date_range(start=start_date, end=end_date, freq="B")
-    if len(dates) < 5:
-        raise ValueError("Date range too short; need at least ~1 week of data.")
+    start_ts = pd.to_datetime(start_date, utc=True)
+    end_ts = pd.to_datetime(end_date, utc=True)
+    
+    series_list = []
+    
+    for sym in universe:
+        df = get_futures_data(sym)
+        if df is None or df.empty:
+            print(f"Warning: No data found for {sym}.")
+            continue
+            
+        # Ensure time column is properly typed and tz-aware
+        if 'time' not in df.columns:
+            raise KeyError(f"'time' column missing from data for {sym}.")
+            
+        df['time'] = pd.to_datetime(df['time'], utc=True)
+        
+        # Filter dates
+        mask = (df['time'] >= start_ts) & (df['time'] <= end_ts)
+        df_filtered = df[mask].copy()
+        
+        if df_filtered.empty:
+            print(f"Warning: No data in specified date range for {sym}.")
+            continue
+            
+        # Try to find a valid price column (settle or close)
+        price_col = None
+        for col in ['settle', 'close', 'price']:
+            if col in df_filtered.columns:
+                price_col = col
+                break
+                
+        if not price_col:
+            raise ValueError(f"No price column (settle, close, price) found for {sym}.")
+            
+        s = df_filtered.set_index('time')[price_col]
+        # Drop duplicates just in case
+        s = s[~s.index.duplicated(keep='last')]
+        s.name = sym
+        series_list.append(s)
 
-    rng = np.random.default_rng(seed)
-
-    n = len(dates)
-    m = len(universe)
-
-    # Common "market" factor + idiosyncratic components to create correlation.
-    market = rng.normal(loc=0.0, scale=0.0075, size=n)
-    idio = rng.normal(loc=0.0, scale=0.0125, size=(n, m))
-
-    # Vol clustering: scale returns by a slow-moving volatility process.
-    vol = np.sqrt(
-        0.00003
-        + 0.95
-        * pd.Series(market**2, index=dates).ewm(span=30, adjust=False).mean().values
-    )
-    vol = vol / np.nanmean(vol)
-
-    # Log returns with modest drift differences across contracts.
-    drift = rng.normal(loc=0.00005, scale=0.00005, size=m)
-    log_rets = drift + (0.6 * market[:, None] + 0.4 * idio) * vol[:, None]
-
-    # Build prices from log returns.
-    start_prices = rng.uniform(50.0, 200.0, size=m)
-    log_prices = np.log(start_prices)[None, :] + np.cumsum(log_rets, axis=0)
-    prices = np.exp(log_prices)
-
-    return pd.DataFrame(prices, index=dates, columns=list(universe))
+    if not series_list:
+        raise ValueError("No valid data fetched for the specified universe and date range.")
+        
+    wide_df = pd.concat(series_list, axis=1)
+    
+    # Normalize index to business dates if needed
+    wide_df.index = wide_df.index.normalize()
+    wide_df.sort_index(inplace=True)
+    
+    return wide_df
 
 
 def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
