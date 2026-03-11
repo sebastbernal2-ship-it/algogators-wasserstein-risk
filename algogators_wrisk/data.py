@@ -36,19 +36,28 @@ def load_continuous_futures_prices(
         column per symbol.
     """
     try:
-        from algogators_data import get_futures_data
+        from algogators_data.algodata import Database
     except ImportError:
         raise ImportError(
             "algogators-data is missing. Run: pip install algogators-data"
         )
+    
+    import os
 
     start_ts = pd.to_datetime(start_date, utc=True)
     end_ts = pd.to_datetime(end_date, utc=True)
     
     series_list = []
     
+    db = Database(
+        dbname=os.environ.get("DB_NAME"),
+        username=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD"),
+        host=os.environ.get("DB_HOST"),
+    )
+    
     for sym in universe:
-        df = get_futures_data(sym)
+        df = db.get_futures_data(sym)
         if df is None or df.empty:
             print(f"Warning: No data found for {sym}.")
             continue
