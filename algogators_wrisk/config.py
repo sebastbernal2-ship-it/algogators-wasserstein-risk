@@ -23,6 +23,13 @@ W_EVENT_QUANTILE = 0.95
 EXPOSURE_ON_EVENT = 0.5
 HAC_LAGS = 5
 
+# --- Operational Specification ---
+# The concrete rule AlgoGators could plausibly deploy.
+OP_RV_WINDOW = 20
+OP_LAMBDA_WINDOW = 60
+OP_W_QUANTILE = 0.95
+OP_EXPOSURE_ON_EVENT = 0.5
+
 # --- Data Source Metadata ---
 DB_SCHEMA = "futures_data"
 PRICES_TABLE = "new_data_ohlcv_1d"
