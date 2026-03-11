@@ -35,62 +35,58 @@ def load_continuous_futures_prices(
         Wide DataFrame of settle prices, indexed by business date with one
         column per symbol.
     """
-    try:
-        from algogators_data.algodata import Database
-    except ImportError:
-        raise ImportError(
-            "algogators-data is missing. Run: pip install algogators-data"
-        )
-    
     import os
-
-    start_ts = pd.to_datetime(start_date, utc=True)
-    end_ts = pd.to_datetime(end_date, utc=True)
+    import pandas as pd
+    from sqlalchemy import create_engine
     
+    # Use environment vars configured via python-dotenv
+    db_user = os.environ.get('DB_USER')
+    db_password = os.environ.get('DB_PASSWORD')
+    db_host = os.environ.get('DB_HOST')
+    db_name = os.environ.get('DB_NAME')
+    
+    if not all([db_user, db_password, db_host, db_name]):
+         raise ValueError("Missing database credentials in environment variables.")
+         
+    conn_str = f"postgresql+psycopg://{db_user}:{db_password}@{db_host}:5432/{db_name}"
+    engine = create_engine(conn_str)
+    
+    # Optional logic: If internal config changes schema/table, update here!
+    # For now we use the ones defined locally or default to standard pg admin names.
+    from algogators_wrisk import config
+    schema = getattr(config, 'DB_SCHEMA', 'futures_data')
+    table = getattr(config, 'PRICES_TABLE', 'ohlcv_1d')
+
     series_list = []
     
-    db = Database(
-        dbname=os.environ.get("DB_NAME"),
-        username=os.environ.get("DB_USER"),
-        password=os.environ.get("DB_PASSWORD"),
-        host=os.environ.get("DB_HOST"),
-    )
-    
     for sym in universe:
-        df = db.get_futures_data(sym)
-        if df is None or df.empty:
-            print(f"Warning: No data found for {sym}.")
-            continue
-            
-        # Ensure time column is properly typed and tz-aware
-        if 'time' not in df.columns:
-            raise KeyError(f"'time' column missing from data for {sym}.")
-            
-        df['time'] = pd.to_datetime(df['time'], utc=True)
+        query = f"SELECT time, close FROM {schema}.{table} WHERE symbol = '{sym}' AND time BETWEEN '{start_date}' AND '{end_date}' ORDER BY time ASC"
         
-        # Filter dates
-        mask = (df['time'] >= start_ts) & (df['time'] <= end_ts)
-        df_filtered = df[mask].copy()
-        
-        if df_filtered.empty:
-            print(f"Warning: No data in specified date range for {sym}.")
+        try:
+            df = pd.read_sql(query, engine)
+        except Exception as e:
+            print(f"Warning: Database query failed for {sym}: {e}")
             continue
+
+        if not df.empty:
+            df['time'] = pd.to_datetime(df['time'], utc=True).dt.floor('D')
+            s = df.set_index('time')['close'].rename(sym)
+            series_list.append(s[~s.index.duplicated(keep='last')])
+        else:
+            print(f"Warning: No data found for {sym}")
+
+    if not series_list:
+        raise ValueError("No valid data fetched for the specified universe and date range.")
+        
+    wide_df = pd.concat(series_list, axis=1)
+    
+    # Normalize index to business dates if needed
+    wide_df.index = wide_df.index.normalize()
+    wide_df.sort_index(inplace=True)
+    
+    return wide_df
             
-        # Try to find a valid price column (settle or close)
-        price_col = None
-        for col in ['settle', 'close', 'price']:
-            if col in df_filtered.columns:
-                price_col = col
-                break
-                
-        if not price_col:
-            raise ValueError(f"No price column (settle, close, price) found for {sym}.")
-            
-        s = df_filtered.set_index('time')[price_col]
-        # Drop duplicates just in case
-        s = s[~s.index.duplicated(keep='last')]
-        s.name = sym
-        series_list.append(s)
+
 
     if not series_list:
         raise ValueError("No valid data fetched for the specified universe and date range.")
