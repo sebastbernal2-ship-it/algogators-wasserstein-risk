@@ -7,3 +7,4 @@ python-dotenv
 sqlalchemy
 psycopg
 psycopg-binary
+seaborn

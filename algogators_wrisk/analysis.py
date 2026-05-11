@@ -26,6 +26,7 @@ def build_core_panel(
     - `mkt_ret`: equal-weight cross-sectional market return
     - `rv_past`: trailing realized vol of `mkt_ret`
     - `rv_future`: forward realized vol of `mkt_ret` (target variable)
+    - `mdd_future`: forward max drawdown of `mkt_ret` (target variable)
     - `lambda1`: rolling largest eigenvalue of correlation matrix
     """
 
@@ -37,30 +38,33 @@ def build_core_panel(
         mkt, rv_past_window, annualize=annualize_rv
     ).rename("rv_past")
 
-    # Forward realized vol: std over next window (shifted backwards so it lines up on t).
+    # Forward targets
     rv_future = (
         mkt.rolling(rv_future_window).std().shift(-rv_future_window + 1).rename("rv_future")
     )
     if annualize_rv:
         rv_future = rv_future * np.sqrt(252)
+    
+    mdd_future = features.compute_forward_max_drawdown(mkt, rv_future_window).rename("mdd_future")
 
     lambda1 = features.compute_rolling_lambda1(r, lambda1_window).rename("lambda1")
 
-    panel = pd.concat([w, mkt, rv_past, rv_future, lambda1], axis=1)
+    panel = pd.concat([w, mkt, rv_past, rv_future, mdd_future, lambda1], axis=1)
     return panel
 
 
 def run_rv_regression(
     panel: pd.DataFrame,
     *,
+    target_col: str = "rv_future",
     hac_lags: int = 5,
     add_const: bool = True,
 ) -> sm.regression.linear_model.RegressionResultsWrapper:
-    """Run regression: rv_future ~ W + rv_past + lambda1 with HAC SEs."""
+    """Run regression: {target_col} ~ W + rv_past + lambda1 with HAC SEs."""
 
-    cols = ["rv_future", "W", "rv_past", "lambda1"]
+    cols = [target_col, "W", "rv_past", "lambda1"]
     df = panel[cols].dropna()
-    y = df["rv_future"]
+    y = df[target_col]
     X = df[["W", "rv_past", "lambda1"]]
     if add_const:
         X = sm.add_constant(X)
@@ -68,6 +72,73 @@ def run_rv_regression(
     model = sm.OLS(y, X)
     res = model.fit(cov_type="HAC", cov_kwds={"maxlags": int(hac_lags)})
     return res
+
+
+def get_summary_stats(series: pd.Series) -> pd.DataFrame:
+    """Return key summary statistics for a series as a DataFrame."""
+    qs = [0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]
+    stats = series.describe(percentiles=qs).to_frame().T
+    stats["skew"] = series.skew()
+    stats["kurt"] = series.kurtosis()
+    return stats
+
+
+def run_correlation_analysis(
+    panel: pd.DataFrame, 
+    w_col: str = "W", 
+    targets: list[str] | None = None
+) -> pd.DataFrame:
+    """Compute Pearson and Spearman correlations between W and target variables."""
+    if targets is None:
+        targets = ["rv_future", "mdd_future", "lambda1"]
+    
+    df = panel[[w_col] + [t for t in targets if t in panel.columns]].dropna()
+    
+    pearson = df.corr(method="pearson")[w_col].drop(w_col)
+    spearman = df.corr(method="spearman")[w_col].drop(w_col)
+    
+    return pd.DataFrame({"Pearson": pearson, "Spearman": spearman})
+
+
+def make_random_event_baseline(
+    panel: pd.DataFrame,
+    *,
+    value_col: str = "mkt_ret",
+    n_events: int = 50,
+    pre: int = 10,
+    post: int = 10,
+    seed: int = 42
+) -> EventStudyResult:
+    """Generate a random-date baseline for event studies."""
+    df = panel[[value_col]].dropna()
+    valid_dates = df.index[pre : -post]
+    
+    np.random.seed(seed)
+    events = pd.DatetimeIndex(np.random.choice(valid_dates, size=n_events, replace=False)).sort_values()
+    
+    rows: list[dict] = []
+    for ev in events:
+        loc = df.index.get_loc(ev)
+        window = df.iloc[loc - pre : loc + post + 1][value_col]
+        taus = np.arange(-pre, post + 1)
+        for tau, val in zip(taus, window.values):
+            rows.append({"event_date": ev, "tau": int(tau), "value": float(val)})
+            
+    stacked = pd.DataFrame(rows)
+    avg = stacked.groupby("tau")["value"].mean().rename("avg_value")
+    
+    return EventStudyResult(events=events, stacked=stacked, avg_path=avg)
+
+
+def split_time_series(panel: pd.DataFrame, cutoff_date: str = "2020-01-01") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split the panel into two regimes (e.g. In-Sample and Out-of-Sample)."""
+    cutoff = pd.to_datetime(cutoff_date)
+    # Match timezone of the panel index if applicable
+    if hasattr(panel.index, 'tz') and panel.index.tz is not None:
+        cutoff = cutoff.tz_localize(panel.index.tz)
+    is_split = panel.loc[panel.index < cutoff]
+    oos_split = panel.loc[panel.index >= cutoff]
+    return is_split, oos_split
 
 
 @dataclass(frozen=True)

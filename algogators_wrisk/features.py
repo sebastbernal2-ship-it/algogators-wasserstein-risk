@@ -152,3 +152,41 @@ def compute_rolling_lambda1(
         out[t] = float(np.max(eigvals))
 
     return pd.Series(out, index=dates, name=f"lambda1_{window}")
+
+
+def compute_drawdowns(pnl_series: pd.Series) -> pd.Series:
+    """Compute the drawdown series from a PnL series (non-cumulative returns)."""
+    cum = pnl_series.cumsum()
+    running_max = cum.cummax()
+    dd = cum - running_max
+    dd.name = "drawdown"
+    return dd
+
+
+def compute_forward_max_drawdown(
+    ret_series: pd.Series,
+    window: int,
+) -> pd.Series:
+    """Compute the maximum drawdown experienced over the *next* window days.
+
+    Note: This is a target variable for predictive modeling. It uses a 
+    look-ahead window and shifts it back to align with day t.
+    """
+    if window <= 1:
+        raise ValueError("window must be > 1")
+
+    # Efficiently compute rolling MDD using a custom function
+    # MDD = min(CumSum - RunningMax(CumSum))
+    def _mdd_func(x):
+        # x is the window of returns
+        cs = np.cumsum(x)
+        rm = np.maximum.accumulate(cs)
+        # Avoid division by zero if prices are flat, but these are returns
+        return float(np.min(cs - rm))
+
+    # We want max drawdown over [t+1, t+window].
+    # rolling(window).apply(_mdd_func) at index t+window gives MDD for [t+1, t+window].
+    # Then we shift it back by -window to align with t.
+    mdd = ret_series.rolling(window).apply(_mdd_func, raw=True).shift(-window)
+    mdd.name = f"forward_mdd_{window}"
+    return mdd
